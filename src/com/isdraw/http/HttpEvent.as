@@ -1,7 +1,10 @@
-package com.xiaokubi.http
+package com.isdraw.http
 {
 	import flash.events.Event;
-	
+	/**
+	 * @author isdraw.com
+	 * http event
+	 */	
 	public class HttpEvent extends Event
 	{
 		/**

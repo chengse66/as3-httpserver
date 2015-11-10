@@ -1,4 +1,4 @@
-package com.xiaokubi.http
+package com.isdraw.http
 {
 	
 	import flash.events.EventDispatcher;
@@ -6,7 +6,7 @@ package com.xiaokubi.http
 	import flash.net.ServerSocket;
 	import flash.utils.Dictionary;
 
-	[Event(name="newContext", type="com.xiaokubi.http.HttpEvent")]
+	[Event(name="newContext", type="com.isdraw.http.HttpEvent")]
 	public class HttpServer extends EventDispatcher
 	{
 		private var socket:ServerSocket;
@@ -39,6 +39,15 @@ package com.xiaokubi.http
 		 */		
 		public function start():void{
 			socket.listen();
+		}
+		
+		/**
+		 * 当前版本 
+		 * @return 
+		 * 
+		 */		
+		public function get version():String{
+			return "0.2";
 		}
 	}
 }

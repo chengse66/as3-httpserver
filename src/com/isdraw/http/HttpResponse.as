@@ -1,8 +1,12 @@
-package com.xiaokubi.http
+package com.isdraw.http
 {
 	import flash.net.Socket;
 	import flash.utils.ByteArray;
 
+	/**
+	 * @author isdraw.com
+	 * http response
+	 */	
 	public class HttpResponse extends ByteArray
 	{
 		private var socket:Socket;

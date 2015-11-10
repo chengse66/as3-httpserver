@@ -1,4 +1,4 @@
-package com.xiaokubi.http
+package com.isdraw.http
 {
 	import flash.events.ProgressEvent;
 	import flash.filesystem.FileStream;
@@ -6,7 +6,11 @@ package com.xiaokubi.http
 	import flash.utils.ByteArray;
 	import flash.utils.clearTimeout;
 	import flash.utils.setTimeout;
-
+	
+	/**
+	 * @author isdraw.com
+	 * http request
+	 */	
 	public class HttpRequest
 	{
 		public static const TEXT_PLAIN:String="text/plain";
