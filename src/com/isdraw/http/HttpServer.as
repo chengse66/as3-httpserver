@@ -40,14 +40,5 @@ package com.isdraw.http
 		public function start():void{
 			socket.listen();
 		}
-		
-		/**
-		 * 当前版本 
-		 * @return 
-		 * 
-		 */		
-		public function get version():String{
-			return "0.2";
-		}
 	}
 }

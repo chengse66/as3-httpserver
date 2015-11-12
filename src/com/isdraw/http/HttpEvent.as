@@ -1,10 +1,7 @@
 package com.isdraw.http
 {
 	import flash.events.Event;
-	/**
-	 * @author isdraw.com
-	 * http event
-	 */	
+	
 	public class HttpEvent extends Event
 	{
 		/**

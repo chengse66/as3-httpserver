@@ -1,13 +1,10 @@
 package com.isdraw.http
 {
 	import flash.events.Event;
+	import flash.events.OutputProgressEvent;
 	import flash.events.ProgressEvent;
 	import flash.net.Socket;
 
-	/**
-	 * @author isdraw.com
-	 * http context
-	 */	
 	public class HttpContext
 	{
 		private var _request:HttpRequest;
