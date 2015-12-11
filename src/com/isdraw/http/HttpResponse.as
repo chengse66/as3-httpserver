@@ -18,7 +18,6 @@ package com.isdraw.http
 		/**
 		 * 获取状态数据 
 		 * @param code
-		 * 
 		 */		
 		private function get_status_name(code:uint):String{
 			var text:String="OK";
@@ -37,21 +36,75 @@ package com.isdraw.http
 					text="Internal Server Error";
 					break;
 			}
-			return code+" OK";
+			return code+" "+text;
+		}
+		
+		/**
+		 * 根据扩展名获取输出类型 不要.号 
+		 * @param extension
+		 * @return 
+		 */		
+		public function set_content_type(extension:String=""):String{
+			extension=extension.toLowerCase();
+			switch(extension){
+				case "xml":
+				case "xquery":
+				case "xq":
+				case "xsl":
+				case "xql":
+				case "xsd":
+				case "xslt":
+					extension="text/xml";
+					break;
+				case "xls":
+					extension="application/x-xls";
+					break;
+				case "txt":
+				case "log":
+					extension="text/plain";
+					break;
+				case "html":
+				case "htm":
+				case "htx":
+				case "jsp":
+				case "php":
+				case "stm":
+				case "xhtml":
+					extension="text/html";
+					break;
+				case "tif":
+					extension="image/tiff";
+					break;
+				case "gif":
+					extension="image/gif";
+					break;
+				case "png":
+					extension="image/png";
+					break;
+				case "jpg":
+				case "jpeg":
+				case "jfif":
+				case "jpe":
+					extension="image/jpeg";
+					break;
+				default:
+					extension="application/octet-stream";
+					break;
+			}
+			return extension;
 		}
 		
 		/**
 		 * 输出内容到缓冲区 
 		 */		
-		internal function flush():void{
+		public function flush():void{
 			if(socket.connected){
 				socket.writeUTFBytes("HTTP/1.1 "+get_status_name(statusCode)+"\r\n");
 				socket.writeUTFBytes("Content-Type: "+contentType+"\r\n");
 				socket.writeUTFBytes("Content-Length:"+this.length+"\r\n");
+				for(var i:Object in header) socket.writeUTFBytes(i+": "+String(header[i])+"\r\n");
 				socket.writeUTFBytes("\r\n");
-				
-				this.position=0;
-				socket.writeBytes(this,0,this.bytesAvailable);
+				socket.writeBytes(this,0,this.length);
 				socket.flush();
 				socket.close();
 				this.clear();

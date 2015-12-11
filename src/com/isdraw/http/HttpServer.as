@@ -1,12 +1,13 @@
 package com.isdraw.http
 {
 	
+	import flash.events.Event;
 	import flash.events.EventDispatcher;
 	import flash.events.ServerSocketConnectEvent;
 	import flash.net.ServerSocket;
 	import flash.utils.Dictionary;
 
-	[Event(name="newContext", type="com.isdraw.http.HttpEvent")]
+	[Event(name="newContext", type="com.isdraw.http.HttpEvent")] 
 	public class HttpServer extends EventDispatcher
 	{
 		private var socket:ServerSocket;
@@ -25,13 +26,21 @@ package com.isdraw.http
 		 */		
 		private function _client_accept(e:ServerSocketConnectEvent):void{
 			var context:HttpContext=new HttpContext(e.socket,e.socket.remoteAddress+":"+e.socket.remotePort);
-			context._local_parse_success=function():void{
-				var handle:HttpEvent=new HttpEvent(HttpEvent.NEW_CONTEXT);
-				handle.set_arguments(context.request,context.response);
-				dispatchEvent(handle);
-			};
-			cache[context.clientID]=context;
-			context._local_closed=function():void{delete cache[context.clientID];}
+			context.addEventListener(Event.COMPLETE,context_complete);
+		}
+		
+		/**
+		 * request处理结束 
+		 * @param e
+		 * 
+		 */		
+		private function context_complete(e:Event):void{
+			var context:HttpContext=e.target as HttpContext;
+			context.removeEventListener(Event.COMPLETE,context_complete);
+			var h:HttpEvent=new HttpEvent(HttpEvent.NEW_CONTEXT);
+			h.set_context(context);
+			this.dispatchEvent(h);
+			context.response.flush();
 		}
 		
 		/**

@@ -1,18 +1,20 @@
 package com.isdraw.http
 {
+	import flash.events.Event;
+	import flash.events.EventDispatcher;
 	import flash.events.ProgressEvent;
 	import flash.filesystem.File;
 	import flash.filesystem.FileMode;
 	import flash.filesystem.FileStream;
 	import flash.net.Socket;
 	import flash.utils.ByteArray;
+	import flash.utils.IDataOutput;
 	import flash.utils.clearTimeout;
 	import flash.utils.setTimeout;
 
-	public class HttpRequest
+	[Event(name="complete", type="flash.events.Event")]
+	public class HttpRequest extends EventDispatcher
 	{
-		//内部计数器
-		private static var ID:int=0;
 		public static const TEXT_PLAIN:String="text/plain";
 		public static const TEXT_HTML:String="text/html";
 		public static const APPLICATION_X_WWW_FORM_URLENCODED:String="application/x-www-form-urlencoded";
@@ -21,17 +23,11 @@ package com.isdraw.http
 		public static const CONTENT_LENGTH:String="Content-Length";
 		public static const CONTENT_TYPE:String="Content-Type";
 		
+		private const REG_ENCODEURL:RegExp =/([\w\d\.\/\:]+)\=([\w\d\%\.\/\:]+)/g;
 		private const REG_URL:RegExp=/\?.*+$/g;
-		private const REG_QUERYSTRING:RegExp=/([\w]+)\=([\w\%]+)/g;
 		private const REG_LINE:RegExp=/^[\w\d\-]+/;
 		private const REG_KEYPAIR:RegExp=/\w+\=\"[^"]+\"/g;
 
-		private var socket:Socket;
-		internal var _process_complete:Function;
-		private var buffer:ByteArray=new ByteArray();
-		private var line:int=0;
-		private var state:Boolean=false;
-		private var boundary:String;
 		//对外属性
 		public var url:String;
 		public var rawURL:String;
@@ -44,19 +40,22 @@ package com.isdraw.http
 		public var post:Object={};
 		public var files:Object={};
 		
-		//缓冲文件
-		private var cache_file:File;
-		private var cache_stream:FileStream;
+		private var sr:HttpRequestReader;
+		private var _timeout:int;
+		private var data:HttpFile=new HttpFile();
+		private var sw:IDataOutput;
+		private var state:int=0;
+		private var CLRF:Boolean=false;
+		private var boundary:String;
+		private var tmps:Array=[];
+		private var socket:Socket;
+		private var _buffer:ByteArray=new ByteArray();
 		
-		//内部超时时钟
-		private var _timeout:int=0;
 		public function HttpRequest(socket:Socket)
 		{
 			this.socket=socket;
-			cache_file=requireTmp();
-			if(!cache_file.parent.exists) cache_file.parent.createDirectory();
-			cache_stream=new FileStream();
-			cache_stream.open(cache_file,FileMode.APPEND);
+			this.socket.addEventListener(ProgressEvent.SOCKET_DATA,reader_header);
+			sr=new HttpRequestReader(socket);
 			this.reset_clock();
 		}
 		
@@ -65,43 +64,177 @@ package com.isdraw.http
 		 */		
 		private function reset_clock():void{
 			clearTimeout(_timeout);
-			_timeout=setTimeout(process_end,100);
+			_timeout=setTimeout(reader_end,1000);
 		}
 		
 		/**
 		 * 数据接收 
 		 * @param e
 		 */		
-		internal function onData(e:ProgressEvent):void{
+		private function reader_header(...args):void{
 			this.reset_clock();
-			if(!state){
-				var b:int=0;
-				while(socket.bytesAvailable>0){
-					b=socket.readByte();
-					if(b!=10){
-						buffer.writeByte(b);
-					}else{
-						buffer.length--;
-						if(buffer.length==0){
-							state=true;
-							parse_header_end();
+			var line:String;
+			while(socket.connected  && sr.readLine()){
+				line=sr.buffer.toString();
+				if(line!=""){
+					parse_header_line(line);
+				}else{
+					parse_header_end();
+					socket.removeEventListener(ProgressEvent.SOCKET_DATA,reader_header);
+					switch(contentType){
+						case TEXT_HTML:
+						case TEXT_PLAIN:
+							reader_end();
 							break;
-						}else{
-							parse_header_line(buffer.toString());
-							buffer.clear();
-						}
+						case APPLICATION_X_WWW_FORM_URLENCODED:
+							_buffer.clear();
+							sr.byteReaded=0;
+							socket.addEventListener(ProgressEvent.SOCKET_DATA,reader_post);
+							reader_post();
+							break;
+						case MULTIPART_FORM_DATA:
+							sr.byteReaded=0;
+							socket.addEventListener(ProgressEvent.SOCKET_DATA,reader_form_data);
+							reader_form_data();
+							break;
+						case APPLICATION_OCTET_STREAM:
+							_buffer.clear();
+							sr.byteReaded=0;
+							socket.addEventListener(ProgressEvent.SOCKET_DATA,reader_octet_stream);
+							reader_octet_stream();
+							break;
 					}
-				}
-			}
-			if(socket.bytesAvailable>0){
-				socket.readBytes(buffer,0,socket.bytesAvailable);
-				if(contentType==MULTIPART_FORM_DATA){
-					cache_stream.writeBytes(buffer,0,buffer.length);
-					buffer.clear();
+					break;
 				}
 			}
 		}
 		
+		/**
+		 * 解析 APPLICATION_X_WWW_FORM_URLENCODED
+		 */		
+		private function reader_post(...args):void{
+			this.reset_clock();
+			sr.readLine();
+			if (sr.byteReaded >= contentLength) {
+				socket.removeEventListener(ProgressEvent.SOCKET_DATA, reader_post);
+				parse_url_data(sr.buffer.toString(),post);
+				reader_end();
+			}
+		}
+		
+		
+		/**
+		 * 解析 MULTIPART_FORM_DATA
+		 * @param args
+		 */		
+		private function reader_form_data(...args):void{
+			var text:String,i:int,b:int,a:String,readFlag:Boolean=true;
+			while(true){
+				readFlag=sr.readLine();
+				if(!readFlag) break;
+				if(state==0){
+					if(sr.buffer.length>=this.boundary.length){
+						text=sr.buffer.toString();
+						if(text.indexOf(this.boundary)>=0){
+							state=1;
+						}
+					}
+				}else if(state==1){
+					//解析Header
+					text=sr.buffer.toString();
+					if(text.indexOf("Content-Disposition: form-data; ")==0){
+						data=new HttpFile();
+						var sps:Array=text.match(REG_KEYPAIR);
+						for(i=0;i<sps.length;i++){
+							a=sps[i].replace(/[\'\"]/g,"");
+							b=a.indexOf("=");
+							if(b>0) data[a.substring(0,b)]=a.substring(b+1);
+						}
+					}else if(text.indexOf("Content-Type: ")==0){
+						data.contentType=text.replace("Content-Type: ","");
+					}else if(text==""){
+						if(data.filename){
+							var nf:File=requireTmp();
+							data.tmpFile=nf.nativePath;
+							var fs:FileStream=new FileStream();
+							fs.open(nf,FileMode.APPEND);
+							sw=fs;
+						}else{
+							_buffer.clear();
+							sw=_buffer;
+						}
+						CLRF=false;
+						state=2;
+					}
+				}else if(state==2){
+					if(sr.buffer.length<=this.boundary.length+10 && sr.buffer.length>=this.boundary.length && sr.buffer.toString().indexOf(this.boundary)>=0){
+						if(sw is FileStream){
+							(sw as FileStream).close();
+							this.files[data.name]=data;
+						}else{
+							this.post[data.name]=_buffer.toString();
+						}
+						state=1;
+					}else{
+						if(CLRF){
+							sw.writeByte(13);
+							sw.writeByte(10);
+						}
+						sw.writeBytes(sr.buffer,0,sr.buffer.length);
+						CLRF=true;
+					}
+				}
+			}
+			if(sr.byteReaded==contentLength){
+				socket.removeEventListener(ProgressEvent.SOCKET_DATA,reader_form_data);
+				_buffer.clear();
+				reader_end();
+			}
+		}
+		
+		/**
+		 * 读取二进制流数据 
+		 */		
+		private function reader_octet_stream(...args):void{
+			socket.readBytes(_buffer,_buffer.length,socket.bytesAvailable);
+			if(_buffer.length>=contentLength){
+				reader_end();
+			}
+		}
+		
+		/**
+		 * 流程处理结束 
+		 */		
+		private function reader_end():void{
+			clearTimeout(_timeout);
+			sr.dispose();
+			if(url==null || rawURL==null){
+				try{
+					socket.close();
+				}catch(e:Error){
+				}
+			}else{
+				this.dispatchEvent(new Event(Event.COMPLETE));
+			}
+			this._buffer.clear();
+			this.dispose();
+		}
+		
+		/**
+		 * 清空当前文件 
+		 */		
+		private function dispose():void{
+			for(var i:int=0;i<this.tmps.length;i++){
+				var f:File=new File(this.tmps[i]);
+				if(f.exists){
+					try{
+						f.deleteFileAsync();
+					}catch(e:Error){
+						
+					}
+				}
+			}
+		}
 		
 		/**
 		 * 处理文件头 
@@ -116,11 +249,20 @@ package com.isdraw.http
 				var _l:Array=header[CONTENT_TYPE].split('; boundary=');
 				if(_l.length==2){
 					contentType=_l[0];
-					boundary=_l[1];
+					boundary=_l[1];	
 				}else{
 					contentType=header[CONTENT_TYPE];
 				}
 			}
+		}
+		
+		/**
+		 * 当前输入的流仅 octet stream 有效
+		 * @return 
+		 * 
+		 */		
+		public function get stream():ByteArray{
+			return _buffer;
 		}
 		
 		/**
@@ -140,7 +282,8 @@ package com.isdraw.http
 					rawURL=c[1];
 					version=c[2];
 					url=rawURL.replace(REG_URL,"");
-					parse_data(rawURL,queryString);
+					if(url.length>0) url=url.substr(1);
+					parse_url_data(rawURL,queryString);
 				}
 			}else{
 				var poz:int=text.indexOf(": ");
@@ -154,154 +297,32 @@ package com.isdraw.http
 		 * @param data
 		 * 
 		 */			
-		private function parse_data(text:String,data:Object):void{
-			var list:Array=text.match(REG_QUERYSTRING);
-			if(list!=null){
-				for(var i:int=0;i<list.length;i++){
-					var _list:Array=list[i].split('=');
-					if(_list.length==2){
-						data[_list[0]]=_list[1];
-					}
-				}
-			}
-		}
-		
-		
-
-		/**
-		 * 读写完成 
-		 * @param text
-		 */		
-		private function process_end():void{
-			cache_stream.close();
-			parse_body();
-			var text:String=buffer.readUTFBytes(buffer.bytesAvailable);
-			parse_data(text,post);
-			_process_complete();
-			buffer.clear();
-			if(cache_file.exists) cache_file.deleteFile();
-		}
-		
-		/**
-		 * 处理内容
-		 **/
-		private function parse_body():void{
-			switch(contentType){
-				case APPLICATION_OCTET_STREAM:
-					break;
-				case APPLICATION_X_WWW_FORM_URLENCODED:
-					parse_data(buffer.toString(),post);
-					break;
-				case MULTIPART_FORM_DATA:
-					parse_form_data();
-					break;
-			}
-		}
-		
-		/**
-		 * 处理正文数据 
-		 */		
-		private function parse_form_data():void{
-			if(!cache_file.exists) return;
-			cache_stream.open(cache_file,FileMode.READ);
-			var bs:ByteArray=new ByteArray();
-			bs.writeUTFBytes("--"+this.boundary+"\r\n");
-			
-			var flist:Vector.<File>=new Vector.<File>();
-			var b:int,i:int,blen:int=bs.length;
-			var tmp:File;
-			var tmpfs:FileStream;
-			var tmpcache:ByteArray=new ByteArray();
-			var iscf:int=0;
-			while(cache_stream.bytesAvailable>0){
-				for(i=0;i<bs.length;i++){
-					if(cache_stream.bytesAvailable>0){
-						b=cache_stream.readByte();
-						tmpcache.writeByte(b);
-						if(b!=bs[i]) break;
-					}else{
-						break;
-					}
-				}
-				if(tmpcache.length==0){
-					break;
-				}else if(tmpcache.length==bs.length){
-					if(tmpfs==null){
-						bs.clear();
-						bs.writeUTFBytes("\r\n--"+this.boundary);
-						tmpfs=new FileStream();
-					}else{
-						tmpfs.close();
-					}
-					
-					if(cache_stream.bytesAvailable>=20){
-						tmp=requireTmp("cache_");
-						flist.push(tmp);
-						//cache_stream.position+=2;
-						var ds:String=stream_read_line(cache_stream);
-						
-						var sps:Array=ds.match(REG_KEYPAIR);
-						var file:FileObject=new FileObject();
-						//处理files
-						var a:String,ii:int;
-						if(sps.length>=2){
-							for(i=0;i<sps.length;i++){
-								a=sps[i].replace(/[\'\"]/g,"");
-								ii=a.indexOf("=");
-								if(ii>0){
-									file[a.substring(0,ii)]=a.substring(ii+1);
-								}
-							}
-						}
-						ds=stream_read_line(cache_stream);
-						var poz:int=ds.indexOf(": ");
-						if(poz>0) file.contentType=ds.substring(poz+2);
-						file.tmpFile=tmp.nativePath;
-						files[file.name]=file;
-						stream_read_line(cache_stream);
-					}else{
-						break;
-					}
-					
-					tmpfs.open(tmp,FileMode.APPEND);
+		private function parse_url_data(text:String,data:Object):void{
+			REG_ENCODEURL.lastIndex = 0;
+			var list:Array = REG_ENCODEURL.exec(text);
+			while (list != null) {
+				if(data==queryString){
+					data[list[1]] =unescape(list[2]);
 				}else{
-					cache_stream.position-=tmpcache.length-1;
-					if(tmpfs!=null){
-						tmpfs.writeBytes(tmpcache,0,1);
+					try{
+						data[list[1]] = decodeURIComponent(list[2]); 
+					}catch(e:Error){
+						data[list[1]] = unescape(list[2]); 
 					}
 				}
-				tmpcache.clear();
+				list = REG_ENCODEURL.exec(text);
 			}
-			cache_stream.close();
-		}
-		
-		/**
-		 * 读取一行 
-		 * @return 
-		 */		
-		private function stream_read_line(stream:FileStream):String{
-			var b:ByteArray=new ByteArray();
-			var c:int;
-			while(stream.bytesAvailable>0){
-				c=stream.readByte();
-				if(c==13){
-					if(stream.bytesAvailable>0){
-						stream.position++;
-					}
-					break;
-				}
-				b.writeByte(c);
-			}
-			return b.toString();
 		}
 		
 		/**
 		 * 请求一个临时文件 
 		 * @return 
 		 */		
-		private function requireTmp(tab:String=""):File{
-			return File.applicationStorageDirectory.resolvePath("http_cache/"+tab+String(new Date().time)+String(ID++)+".tmp");
+		private function requireTmp():File{
+			var f:File= new File(File.createTempFile().nativePath);
+			tmps.push(f.nativePath);
+			trace(f.nativePath);
+			return f;
 		}
 	}
-	
 }
